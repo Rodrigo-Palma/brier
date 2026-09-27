@@ -119,3 +119,32 @@ def test_an_http_error_is_wrapped(monkeypatch):
 
     with pytest.raises(EncoderError, match="did not answer"):
         OllamaEncoder(base_url="http://ollama.test").encode(("alpha",))
+
+
+def test_text_is_lower_cased_before_it_is_sent(monkeypatch):
+    """Ollama 0.18.0 collapses every capitalised token onto one vector."""
+    sent: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["input"])
+        return httpx.Response(200, json={"embeddings": [[1.0, 0.0]]})
+
+    monkeypatch.setattr(encoder_module.httpx, "post", _posting(handler))
+
+    OllamaEncoder(base_url="http://ollama.test").encode(("In Apple's Report",))
+
+    assert sent == [["in apple's report"]]
+
+
+def test_lowercasing_can_be_turned_off(monkeypatch):
+    sent: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["input"])
+        return httpx.Response(200, json={"embeddings": [[1.0, 0.0]]})
+
+    monkeypatch.setattr(encoder_module.httpx, "post", _posting(handler))
+
+    OllamaEncoder(base_url="http://ollama.test", lowercase=False).encode(("In Apple's Report",))
+
+    assert sent == [["In Apple's Report"]]

@@ -88,6 +88,6 @@ def test_results_are_broken_down_by_question_family(encoder):
 
     breakdown = by_name(parameters, batches)
 
-    assert set(breakdown) == {"relevance", "subject", "tone"}
+    assert set(breakdown) == {"answerable", "relevance", "subject", "tone"}
     assert sum(count for count, _ in breakdown.values()) == len(examples)
     assert all(0.0 <= accuracy <= 1.0 for _, accuracy in breakdown.values())

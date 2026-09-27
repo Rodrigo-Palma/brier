@@ -49,6 +49,13 @@ DOMAINS: dict[str, dict[str, str]] = {
 
 SENTIMENT_LEVELS = ("negative", "neutral", "positive")
 
+# Hard negatives. A question about the right subject and the wrong year, or the
+# right subject and another company, is close enough in wording that similarity
+# alone cannot reject it. Without these, the relevance task is isomorphic to
+# cosine similarity and a model trained on it just learns to be cosine.
+YEARS = ("2019", "2021", "2023", "2024", "2025")
+COMPANIES = ("Apple", "Petrobras", "Vale", "Siemens", "Toyota")
+
 HEDGES = (
     "According to the filing, {}.",
     "The report states that {}.",
@@ -84,7 +91,7 @@ def generate(count: int, seed: int, held_out: frozenset[str]) -> tuple[Example, 
         raise ValueError("at least two domains must remain outside the held-out set")
 
     rng = random.Random(seed)
-    families = (_relevance, _sentiment, _subject)
+    families = (_relevance, _sentiment, _subject, _answerable)
     examples = [next(families[index % len(families)](rng, usable)) for index in range(count)]
     rng.shuffle(examples)
     return tuple(examples)
@@ -134,6 +141,48 @@ def _subject(rng: random.Random, usable: tuple[str, ...]) -> Iterator[Example]:
             question=question,
             correct=options.index(domain),
         )
+
+
+def _answerable(rng: random.Random, usable: tuple[str, ...]) -> Iterator[Example]:
+    """Does this passage answer THIS question, not merely mention the subject?
+
+    The passage names a company, a year and a fact. The question asks about a
+    company, a year and a subject. Everything has to line up, and the wrong
+    pairings are the ones a similarity score cannot reject.
+    """
+    while True:
+        domain = rng.choice(usable)
+        company, year = rng.choice(COMPANIES), rng.choice(YEARS)
+        subject = DOMAINS[domain]["subject"]
+        fact = DOMAINS[domain][rng.choice(("good", "bad"))]
+        passage = f"In {company}'s {year} annual report: {fact}."
+
+        # Half the examples line up. Drawing one mismatch out of four would leave
+        # a quarter of them positive, and a model can score 75% on that by
+        # answering "no" to everything.
+        mismatch = "none" if rng.random() < 0.5 else rng.choice(("year", "company", "subject"))
+        asked_year = rng.choice([other for other in YEARS if other != year])
+        asked_company = rng.choice([other for other in COMPANIES if other != company])
+        asked_subject = DOMAINS[rng.choice([key for key in usable if key != domain])]["subject"]
+
+        wanted = {
+            "none": (company, year, subject),
+            "year": (company, asked_year, subject),
+            "company": (asked_company, year, subject),
+            "subject": (company, year, asked_subject),
+        }[mismatch]
+
+        question = boolean(
+            "answerable",
+            f"Does the passage answer this question: what was {wanted[0]}'s "
+            f"{_bare(wanted[2])} in {wanted[1]}?",
+        )
+        yield Example(state=passage, question=question, correct=int(mismatch == "none"))
+
+
+def _bare(subject: str) -> str:
+    """Drop a leading article, so the possessive reads as English."""
+    return subject.removeprefix("the ")
 
 
 def _passage(rng: random.Random, domain: str, polarity: str | None = None) -> str:

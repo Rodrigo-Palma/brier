@@ -28,15 +28,26 @@ class OllamaEncoder:
     The weights here are not ours and are never trained. Everything the model
     learns lives in the head on top, which is what makes training cheap enough
     to run on a laptop.
+
+    Text is lower-cased before it is sent. That is not tidying. On Ollama 0.18.0
+    with nomic-embed-text, every capitalised token collapses onto one vector:
+    "Apple", "Cat" and "Zebra" come back identical to eight decimal places, and
+    two sentences differing only in a company name come back byte for byte the
+    same. Lower-casing restores the distinction, measured at cosine 0.813 for a
+    pair that read 1.000 before. Pass ``lowercase=False`` to send text as
+    written, once the upstream tokenizer stops doing this.
     """
 
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
         model: str = "nomic-embed-text",
+        *,
+        lowercase: bool = True,
     ) -> None:
         self._url = f"{base_url.rstrip('/')}/api/embed"
         self._model = model
+        self._lowercase = lowercase
         self._dimension = 0
 
     @property
@@ -48,10 +59,12 @@ class OllamaEncoder:
     def encode(self, texts: tuple[str, ...]) -> np.ndarray:
         if not texts:
             raise ValueError("nothing to encode")
+
+        sent = [text.lower() for text in texts] if self._lowercase else list(texts)
         try:
             response = httpx.post(
                 self._url,
-                json={"model": self._model, "input": list(texts)},
+                json={"model": self._model, "input": sent},
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
             payload = response.raise_for_status().json()
