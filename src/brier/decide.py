@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from brier.encoder import Encoder
-from brier.features import pair_features
+from brier.features import feature_size, pair_features
 from brier.model import Parameters, probabilities
 from brier.types import Answer, Question
 
@@ -34,8 +34,20 @@ class Decider:
     min_confidence: float = DEFAULT_MIN_CONFIDENCE
 
     def __post_init__(self) -> None:
+        """Raises:
+        ValueError: when the threshold is not a probability, or when the
+            weights were not trained for this encoder.
+        """
         if not 0.0 <= self.min_confidence <= 1.0:
             raise ValueError("min_confidence must be a probability")
+
+        expected = self.parameters.first_weight.shape[0]
+        recorded = self.parameters.provenance
+        if recorded.dimension and feature_size(recorded.dimension) != expected:
+            raise ValueError(
+                f"weights record {recorded.dimension}-dimensional input but their first "
+                f"layer takes {expected} features"
+            )
 
     def decide(self, state: str, questions: Sequence[Question]) -> tuple[Answer, ...]:
         """Answer every question about one state.

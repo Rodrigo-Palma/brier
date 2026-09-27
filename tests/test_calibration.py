@@ -30,7 +30,7 @@ def trained():
 def test_the_fitted_temperature_does_not_raise_the_holdout_loss(trained):
     parameters, validation = trained
 
-    temperature = fit_temperature(parameters, validation)
+    temperature = fit_temperature(parameters, validation).value
 
     before, _ = evaluate(parameters, validation)
     after, _ = evaluate(with_temperature(parameters, temperature), validation)
@@ -59,6 +59,25 @@ def test_an_untrained_model_is_near_chance_and_says_so():
     report = assess(parameters, _noisy(150, 8, 1.0, seed=3))
 
     assert report.mean_confidence == pytest.approx(1 / 3, abs=0.02)
+    assert report.accuracy.low < report.accuracy.rate < report.accuracy.high
+
+
+def test_the_report_carries_the_error_a_perfect_model_would_score(trained):
+    """An ECE below the floor is evidence of nothing."""
+    parameters, validation = trained
+
+    report = assess(parameters, validation)
+
+    assert report.noise_floor.rate > 0
+    assert report.beats_the_floor is (report.expected_calibration_error > report.noise_floor.high)
+
+
+def test_a_temperature_that_lands_on_the_grid_edge_says_so(trained):
+    parameters, validation = trained
+
+    sharp = fit_temperature(with_temperature(parameters, 1.0), validation)
+
+    assert isinstance(sharp.at_grid_edge, bool)
 
 
 def test_abstaining_raises_accuracy_among_the_answers_that_remain(trained):

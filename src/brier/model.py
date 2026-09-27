@@ -17,14 +17,34 @@ INIT_SCALE = 0.05
 
 
 @dataclass(frozen=True, slots=True)
+class Provenance:
+    """What produced these weights, stored beside them.
+
+    Without it a file of five arrays means nothing: another encoder of the same
+    dimension loads without complaint and returns confident nonsense, and this
+    project already found that the same encoder name behaves differently across
+    runtime versions.
+    """
+
+    encoder: str = ""
+    dimension: int = 0
+    feature_blocks: int = 0
+    seed: int = 0
+
+    def describe(self) -> str:
+        return f"{self.encoder}, {self.dimension}d, {self.feature_blocks} blocks, seed {self.seed}"
+
+
+@dataclass(frozen=True, slots=True)
 class Parameters:
     """Weights of the scorer. Frozen: every update returns a new instance."""
 
     first_weight: np.ndarray
     first_bias: np.ndarray
     second_weight: np.ndarray
-    second_bias: np.ndarray
+    second_bias: np.float32
     temperature: float = 1.0
+    provenance: Provenance = Provenance()
 
 
 def initialise(feature_size: int, hidden_size: int = DEFAULT_HIDDEN, seed: int = 0) -> Parameters:
@@ -119,6 +139,10 @@ def save(parameters: Parameters, path: Path) -> None:
         second_weight=parameters.second_weight,
         second_bias=parameters.second_bias,
         temperature=np.float32(parameters.temperature),
+        encoder=parameters.provenance.encoder,
+        dimension=parameters.provenance.dimension,
+        feature_blocks=parameters.provenance.feature_blocks,
+        seed=parameters.provenance.seed,
     )
 
 
@@ -137,4 +161,10 @@ def load(path: Path) -> Parameters:
         second_weight=stored["second_weight"],
         second_bias=np.float32(stored["second_bias"]),
         temperature=float(stored["temperature"]),
+        provenance=Provenance(
+            encoder=str(stored["encoder"]) if "encoder" in stored else "",
+            dimension=int(stored["dimension"]) if "dimension" in stored else 0,
+            feature_blocks=int(stored["feature_blocks"]) if "feature_blocks" in stored else 0,
+            seed=int(stored["seed"]) if "seed" in stored else 0,
+        ),
     )

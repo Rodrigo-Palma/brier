@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from brier.api import app, provide_decider
+from brier.api import app, provide_decider, provide_settings
 from brier.decide import Decider
 from brier.encoder import EncoderError
 from brier.features import feature_size
@@ -118,3 +118,42 @@ def test_an_unreachable_encoder_is_a_service_error_not_a_crash():
     assert response.status_code == 503
     assert "ollama did not answer" in response.json()["detail"]
     app.dependency_overrides.clear()
+
+
+def test_repeated_question_names_are_rejected_before_the_model_runs(client):
+    """Two answers of the same name: a caller keying by name loses one."""
+    response = client.post(
+        "/decide",
+        json={
+            "state": "revenue grew",
+            "questions": [RELEVANCE, {**RELEVANCE, "prompt": "Something else?"}],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "unique" in response.text
+
+
+def test_ready_reports_what_the_instance_is_serving(client):
+    response = client.get("/ready")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["status"] == "ready"
+    assert "temperature" in body and "weights" in body
+
+
+def test_ready_says_503_when_there_are_no_weights(tmp_path, monkeypatch):
+    """The sibling service already did this; without it the answer was a traceback."""
+    provide_decider.cache_clear()
+    provide_settings.cache_clear()
+    monkeypatch.setenv("BRIER_WEIGHTS_PATH", str(tmp_path / "absent.npz"))
+    app.dependency_overrides.clear()
+
+    with TestClient(app) as bare:
+        response = bare.get("/ready")
+
+    assert response.status_code == 503
+    assert "run scripts/train_model.py" in response.json()["detail"]
+    provide_decider.cache_clear()
+    provide_settings.cache_clear()

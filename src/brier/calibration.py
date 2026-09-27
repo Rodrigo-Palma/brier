@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from brier.model import Parameters, probabilities, scores, with_temperature
+from brier.statistics import Interval, ece_noise_floor, wilson
 from brier.train import Batch
 
 TEMPERATURE_GRID = tuple(np.round(np.arange(0.25, 6.01, 0.05), 2))
@@ -35,22 +36,47 @@ class Bin:
 
 @dataclass(frozen=True, slots=True)
 class CalibrationReport:
-    """Measured, not claimed."""
+    """Measured, not claimed.
+
+    ``noise_floor`` is what a perfectly calibrated model would score on this
+    many questions with this confidence profile. An ECE at or below it is
+    evidence of nothing, and at these sample sizes the floor is large.
+    """
 
     temperature: float
     expected_calibration_error: float
+    noise_floor: Interval
     brier: float
-    accuracy: float
+    accuracy: Interval
     mean_confidence: float
     bins: tuple[Bin, ...]
 
     @property
     def overconfidence(self) -> float:
         """Positive when the model claims more than it delivers."""
-        return self.mean_confidence - self.accuracy
+        return self.mean_confidence - self.accuracy.rate
+
+    @property
+    def beats_the_floor(self) -> bool:
+        """Whether the measured error is distinguishable from perfect calibration."""
+        return self.expected_calibration_error > self.noise_floor.high
 
 
-def fit_temperature(parameters: Parameters, batches: Sequence[Batch]) -> float:
+@dataclass(frozen=True, slots=True)
+class FittedTemperature:
+    """The fitted value, and whether the grid ran out before the optimum did.
+
+    A fit that lands on the edge of the grid is not a fit, it is a bound, and
+    the two are indistinguishable from the number alone. Measured case: fitting
+    one temperature per question family sent two families to 0.25 and one to
+    6.0, which is the grid saying a single global temperature is the wrong shape.
+    """
+
+    value: float
+    at_grid_edge: bool
+
+
+def fit_temperature(parameters: Parameters, batches: Sequence[Batch]) -> FittedTemperature:
     """Pick the temperature that minimises held-out cross-entropy.
 
     A grid search rather than a gradient: it is one scalar, the grid is cheap,
@@ -77,7 +103,11 @@ def fit_temperature(parameters: Parameters, batches: Sequence[Batch]) -> float:
         )
         if loss < best_loss:
             best_temperature, best_loss = float(temperature), loss
-    return best_temperature
+
+    return FittedTemperature(
+        value=best_temperature,
+        at_grid_edge=best_temperature in (float(TEMPERATURE_GRID[0]), float(TEMPERATURE_GRID[-1])),
+    )
 
 
 def assess(
@@ -109,8 +139,9 @@ def assess(
     return CalibrationReport(
         temperature=parameters.temperature,
         expected_calibration_error=error,
+        noise_floor=ece_noise_floor(confidences, bin_count),
         brier=brier,
-        accuracy=float(hits.mean()),
+        accuracy=wilson(int(hits.sum()), total),
         mean_confidence=float(confidences.mean()),
         bins=bins,
     )
@@ -120,18 +151,22 @@ def calibrate(
     parameters: Parameters, batches: Sequence[Batch], bin_count: int = DEFAULT_BINS
 ) -> tuple[Parameters, CalibrationReport]:
     """Fit the temperature and report what it bought."""
-    tempered = with_temperature(parameters, fit_temperature(parameters, batches))
+    fitted = fit_temperature(parameters, batches)
+    tempered = with_temperature(parameters, fitted.value)
     return tempered, assess(tempered, batches, bin_count)
 
 
 def _reliability(confidences: np.ndarray, hits: np.ndarray, bin_count: int) -> tuple[Bin, ...]:
-    """Bins are built over the range the model actually used.
+    """Fixed bins over [0, 1], and empty ones are simply left out of the table.
 
-    Fixed [0, 1] bins leave most of the curve empty for a model whose lowest
-    possible confidence is 1/options, and an empty bin contributes nothing but
-    a misleading row.
+    An earlier version spread the bins over the range the model actually used,
+    which read better and was wrong to publish: the edges then depend on the
+    predictions, so the same predictions scored 0.0371 with fixed bins and
+    0.0899 with that scheme, and a later model with a higher minimum confidence
+    would score differently for a reason that is not calibration. Fixed bins are
+    what the literature reports and the only version comparable across runs.
     """
-    edges = np.linspace(confidences.min(), 1.0, bin_count + 1)
+    edges = np.linspace(0.0, 1.0, bin_count + 1)
     result = []
     for index in range(bin_count):
         lower, upper = float(edges[index]), float(edges[index + 1])

@@ -15,11 +15,15 @@ class Example:
         state: the text the decision is about.
         question: what is being asked.
         correct: index into `question.options` of the option that was right.
+        tag: optional subtype, so results can be broken down below the family.
+            A family average is an average, and one of its subtypes can sit at
+            zero while the family looks merely weak.
     """
 
     state: str
     question: Question
     correct: int
+    tag: str = ""
 
     def __post_init__(self) -> None:
         if not self.state.strip():
@@ -29,6 +33,22 @@ class Example:
                 f"correct index {self.correct} is outside the "
                 f"{len(self.question.options)} options of {self.question.name!r}"
             )
+
+
+def identity(example: Example) -> tuple[str, str, tuple[str, ...], int]:
+    """What makes two examples the same question with the same answer.
+
+    Splits are checked against each other with this. Generated data can repeat
+    itself, and a validation row that is byte-identical to a training row is a
+    training row: it measures memorisation and it silently ruins any early
+    stopping or temperature fitted on it.
+    """
+    return (
+        example.state,
+        example.question.prompt,
+        example.question.options,
+        example.correct,
+    )
 
 
 def to_jsonl(examples: tuple[Example, ...], path: Path) -> None:
@@ -66,6 +86,7 @@ def _as_dict(example: Example) -> dict:
         "prompt": example.question.prompt,
         "options": list(example.question.options),
         "correct": example.correct,
+        "tag": example.tag,
     }
 
 
@@ -76,4 +97,9 @@ def _from_dict(raw: dict) -> Example:
         prompt=raw["prompt"],
         options=tuple(raw["options"]),
     )
-    return Example(state=raw["state"], question=question, correct=int(raw["correct"]))
+    return Example(
+        state=raw["state"],
+        question=question,
+        correct=int(raw["correct"]),
+        tag=str(raw.get("tag", "")),
+    )

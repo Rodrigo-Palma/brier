@@ -148,3 +148,34 @@ def test_lowercasing_can_be_turned_off(monkeypatch):
     OllamaEncoder(base_url="http://ollama.test", lowercase=False).encode(("In Apple's Report",))
 
     assert sent == [["In Apple's Report"]]
+
+
+def test_two_encoders_sharing_a_directory_do_not_share_vectors(tmp_path):
+    """Keyed on text alone, the second encoder silently got the first one's vectors."""
+    first = CachedEncoder(FakeEncoder(), tmp_path / "cache", fingerprint="model-a")
+    second = FakeEncoder()
+    cached_second = CachedEncoder(second, tmp_path / "cache", fingerprint="model-b")
+
+    first.encode(("alpha",))
+    cached_second.encode(("alpha",))
+
+    assert second.calls == [("alpha",)]
+
+
+def test_a_cache_whose_halves_disagree_is_refused(tmp_path):
+    """An interrupted save used to load fine and raise IndexError later."""
+    directory = tmp_path / "cache"
+    CachedEncoder(FakeEncoder(), directory, fingerprint="m").encode(("alpha", "beta"))
+    index = json.loads((directory / "index.json").read_text(encoding="utf-8"))
+    index["extra-key-with-no-vector"] = 2
+    (directory / "index.json").write_text(json.dumps(index), encoding="utf-8")
+
+    with pytest.raises(EncoderError, match="keys for"):
+        CachedEncoder(FakeEncoder(), directory, fingerprint="m")
+
+
+def test_the_ollama_encoder_describes_itself_for_the_cache_key():
+    encoder = OllamaEncoder(model="nomic-embed-text")
+
+    assert encoder.fingerprint == "nomic-embed-text|lowercase=True"
+    assert OllamaEncoder(model="x", lowercase=False).fingerprint == "x|lowercase=False"

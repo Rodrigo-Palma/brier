@@ -62,6 +62,7 @@ class Batch:
     features: np.ndarray
     correct: int
     name: str = ""
+    tag: str = ""
 
 
 def featurise(examples: Sequence[Example], encoder: Encoder) -> tuple[Batch, ...]:
@@ -83,6 +84,7 @@ def featurise(examples: Sequence[Example], encoder: Encoder) -> tuple[Batch, ...
             ),
             correct=example.correct,
             name=example.question.name,
+            tag=example.tag,
         )
         for example in examples
     )
@@ -141,10 +143,27 @@ def fit(
 
 def by_name(parameters: Parameters, batches: Sequence[Batch]) -> dict[str, tuple[int, float]]:
     """Count and accuracy for each question family present in the split."""
+    return _tally(parameters, batches, lambda batch: batch.name)
+
+
+def by_tag(
+    parameters: Parameters, batches: Sequence[Batch], name: str
+) -> dict[str, tuple[int, float]]:
+    """The same, one level deeper, inside a single family.
+
+    A family average hides its own subtypes. Measured on `answerable`: the
+    family read 0.68 while the wrong-year subtype sat at exactly zero, with the
+    model answering "yes" to every one of them and doing it confidently.
+    """
+    rows = [batch for batch in batches if batch.name == name]
+    return _tally(parameters, rows, lambda batch: batch.tag or "untagged")
+
+
+def _tally(parameters: Parameters, batches: Sequence[Batch], key) -> dict[str, tuple[int, float]]:
     tally: dict[str, list[int]] = {}
     for batch in batches:
         predicted = probabilities(parameters, batch.features)
-        counts = tally.setdefault(batch.name, [0, 0])
+        counts = tally.setdefault(key(batch), [0, 0])
         counts[0] += 1
         counts[1] += int(np.argmax(predicted) == batch.correct)
     return {name: (total, hits / total) for name, (total, hits) in sorted(tally.items())}

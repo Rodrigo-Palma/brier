@@ -19,6 +19,10 @@ class FakeEncoder:
     def dimension(self) -> int:
         return self._dimension
 
+    @property
+    def fingerprint(self) -> str:
+        return f"fake-{self._dimension}"
+
     def encode(self, texts: tuple[str, ...]) -> np.ndarray:
         self.calls.append(texts)
         vectors = []

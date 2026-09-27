@@ -11,39 +11,59 @@ showed.
 import random
 from collections.abc import Iterator
 
-from brier.data import Example
+from brier.data import Example, identity
 from brier.types import boolean, choice, score
 
-DOMAINS: dict[str, dict[str, str]] = {
+ATTEMPTS_PER_EXAMPLE = 400
+
+DOMAINS: dict[str, dict[str, object]] = {
     "revenue": {
         "subject": "quarterly revenue",
-        "good": "revenue grew to 94.9 billion dollars",
-        "bad": "revenue fell to 81.4 billion dollars",
+        "good": "revenue grew to {value}",
+        "bad": "revenue fell to {value}",
+        "values": ("94.9 billion dollars", "88.2 billion dollars", "81.4 billion dollars"),
     },
     "headcount": {
         "subject": "the number of employees",
-        "good": "the company added 12,000 people without raising cost per head",
-        "bad": "the company reduced its workforce to 121,000 employees",
+        "good": "the workforce grew to {value}",
+        "bad": "the workforce shrank to {value}",
+        "values": ("164,000 people", "147,500 people", "121,000 people"),
     },
     "litigation": {
         "subject": "pending litigation",
-        "good": "the remaining antitrust claims were dismissed",
-        "bad": "three new class actions were filed against the company",
+        "good": "{value} were dismissed",
+        "bad": "{value} were filed against the company",
+        "values": ("three antitrust claims", "two class actions", "four consumer suits"),
     },
     "rainfall": {
         "subject": "rainfall in the region",
-        "good": "rainfall returned to the seasonal average after two dry years",
-        "bad": "rainfall stopped at 31 millimetres, the driest season on record",
+        "good": "rainfall recovered to {value}",
+        "bad": "rainfall dropped to {value}",
+        "values": ("240 millimetres", "112 millimetres", "31 millimetres"),
     },
     "attendance": {
         "subject": "match attendance",
-        "good": "the stadium sold out for eleven consecutive matches",
-        "bad": "attendance dropped below nine thousand per match",
+        "good": "attendance climbed to {value}",
+        "bad": "attendance sank to {value}",
+        "values": ("48,000 per match", "23,500 per match", "9,000 per match"),
     },
     "infections": {
         "subject": "reported infections",
-        "good": "reported infections fell for the ninth straight week",
-        "bad": "reported infections doubled over six weeks",
+        "good": "reported infections fell to {value}",
+        "bad": "reported infections doubled to {value}",
+        "values": ("1,200 cases", "4,800 cases", "9,600 cases"),
+    },
+    "emissions": {
+        "subject": "carbon emissions",
+        "good": "emissions were cut to {value}",
+        "bad": "emissions rose to {value}",
+        "values": ("2.1 million tonnes", "5.6 million tonnes", "8.9 million tonnes"),
+    },
+    "downtime": {
+        "subject": "service downtime",
+        "good": "downtime was reduced to {value}",
+        "bad": "downtime increased to {value}",
+        "values": ("12 minutes", "94 minutes", "310 minutes"),
     },
 }
 
@@ -62,29 +82,56 @@ HEDGES = (
     "Over the period covered, {}.",
     "Management noted that {}.",
     "In the year under review, {}.",
+    "The disclosure confirms that {}.",
+    "As set out in the notes, {}.",
+    "For the reporting period, {}.",
+    "The summary records that {}.",
+    "Auditors observed that {}.",
+    "Across the twelve months, {}.",
+    "The statement shows that {}.",
 )
 
-NEUTRAL_LINES = (
-    "The figures are presented in the accompanying tables.",
-    "Comparative periods are restated on the same basis.",
-    "The accounting policy is unchanged from the prior year.",
-    "Amounts are stated in millions unless indicated otherwise.",
+# Neutral passages carry a subject too. Fixed strings that mention no domain
+# would appear in every split, and a domain-held-out test set would then contain
+# training rows verbatim. Measured before this change: 25 of 75 tone rows in the
+# test split were byte-identical to training rows, and the model scored 1.000 on
+# exactly those.
+NEUTRAL_TEMPLATES = (
+    "Figures for {subject} are presented in the accompanying tables.",
+    "Comparative periods for {subject} are restated on the same basis.",
+    "The accounting policy for {subject} is unchanged from the prior year.",
+    "Amounts for {subject} are stated in millions unless indicated otherwise.",
+    "Disclosure of {subject} follows the format used in prior years.",
+    "The notes describe how {subject} is measured, without restating it.",
 )
 
 
-def generate(count: int, seed: int, held_out: frozenset[str]) -> tuple[Example, ...]:
-    """Build `count` examples using only the domains outside `held_out`.
+def generate(
+    count: int,
+    seed: int,
+    held_out: frozenset[str],
+    exclude: frozenset[tuple[str, str, tuple[str, ...], int]] = frozenset(),
+) -> tuple[Example, ...]:
+    """Build `count` distinct examples using only the domains outside `held_out`.
+
+    Every example is distinct from the others and from anything in `exclude`,
+    so a caller can build splits that share no rows. The generated space is
+    finite, so asking for more than it holds fails loudly rather than returning
+    duplicates: a split that silently overlaps its neighbour is worse than a
+    split that is too small, because the overlap is invisible in every metric.
 
     Args:
-        count: how many examples to produce.
+        count: how many distinct examples to produce.
         seed: makes the result reproducible.
         held_out: domain keys this split must not touch.
+        exclude: identities already used by another split.
 
     Returns:
         Examples in a shuffled order, spread evenly across the families.
 
     Raises:
-        ValueError: when the held-out set leaves fewer than two domains.
+        ValueError: when fewer than two domains remain, or when the space cannot
+            supply `count` fresh examples.
     """
     usable = tuple(key for key in DOMAINS if key not in held_out)
     if len(usable) < 2:
@@ -92,7 +139,27 @@ def generate(count: int, seed: int, held_out: frozenset[str]) -> tuple[Example, 
 
     rng = random.Random(seed)
     families = (_relevance, _sentiment, _subject, _answerable)
-    examples = [next(families[index % len(families)](rng, usable)) for index in range(count)]
+    streams = [family(rng, usable) for family in families]
+
+    taken: set[tuple[str, str, tuple[str, ...], int]] = set(exclude)
+    examples: list[Example] = []
+    attempts = 0
+    limit = count * ATTEMPTS_PER_EXAMPLE
+
+    while len(examples) < count:
+        attempts += 1
+        if attempts > limit:
+            raise ValueError(
+                f"the space of {sorted(usable)} ran out after {len(examples)} of {count} "
+                f"distinct examples; ask for fewer or widen the generators"
+            )
+        candidate = next(streams[len(examples) % len(streams)])
+        key = identity(candidate)
+        if key in taken:
+            continue
+        taken.add(key)
+        examples.append(candidate)
+
     rng.shuffle(examples)
     return tuple(examples)
 
@@ -114,9 +181,7 @@ def _sentiment(rng: random.Random, usable: tuple[str, ...]) -> Iterator[Example]
     while True:
         domain = rng.choice(usable)
         polarity = rng.choice(("good", "bad", "flat"))
-        passage = (
-            rng.choice(NEUTRAL_LINES) if polarity == "flat" else _passage(rng, domain, polarity)
-        )
+        passage = _neutral(rng, domain) if polarity == "flat" else _passage(rng, domain, polarity)
         question = score(
             "tone",
             "How does the passage read for the business?",
@@ -153,8 +218,8 @@ def _answerable(rng: random.Random, usable: tuple[str, ...]) -> Iterator[Example
     while True:
         domain = rng.choice(usable)
         company, year = rng.choice(COMPANIES), rng.choice(YEARS)
-        subject = DOMAINS[domain]["subject"]
-        fact = DOMAINS[domain][rng.choice(("good", "bad"))]
+        subject = str(DOMAINS[domain]["subject"])
+        fact = _fact(rng, domain)
         passage = f"In {company}'s {year} annual report: {fact}."
 
         # Half the examples line up. Drawing one mismatch out of four would leave
@@ -177,7 +242,25 @@ def _answerable(rng: random.Random, usable: tuple[str, ...]) -> Iterator[Example
             f"Does the passage answer this question: what was {wanted[0]}'s "
             f"{_bare(wanted[2])} in {wanted[1]}?",
         )
-        yield Example(state=passage, question=question, correct=int(mismatch == "none"))
+        yield Example(
+            state=passage,
+            question=question,
+            correct=int(mismatch == "none"),
+            tag=mismatch,
+        )
+
+
+def _fact(rng: random.Random, domain: str) -> str:
+    """The bare fact, without a hedge in front of it."""
+    template = str(DOMAINS[domain][rng.choice(("good", "bad"))])
+    values = DOMAINS[domain]["values"]
+    assert isinstance(values, tuple)
+    return template.format(value=rng.choice(values))
+
+
+def _neutral(rng: random.Random, domain: str) -> str:
+    """A passage that states nothing good or bad, but names its subject."""
+    return rng.choice(NEUTRAL_TEMPLATES).format(subject=DOMAINS[domain]["subject"])
 
 
 def _bare(subject: str) -> str:
@@ -189,5 +272,8 @@ def _passage(rng: random.Random, domain: str, polarity: str | None = None) -> st
     """One sentence about a domain. Polarity is what it means for the business,
     not which way the number moved: more litigation and more infections are bad
     news, so a model trained on direction alone would be learning noise."""
-    fact = DOMAINS[domain][polarity or rng.choice(("good", "bad"))]
-    return rng.choice(HEDGES).format(fact)
+    chosen = polarity or rng.choice(("good", "bad"))
+    template = str(DOMAINS[domain][chosen])
+    values = DOMAINS[domain]["values"]
+    assert isinstance(values, tuple)
+    return rng.choice(HEDGES).format(template.format(value=rng.choice(values)))
