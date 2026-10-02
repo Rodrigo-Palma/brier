@@ -1,5 +1,12 @@
 # brier
 
+> **Archived.** In the pre-registered evaluation of
+> [edgar-rag](https://github.com/Rodrigo-Palma/edgar-rag), brier ranked worse than
+> a cosine threshold as a relevance gate (ΔAUROC -0.101, 95% CI [-0.124, -0.080])
+> and was removed
+> ([ADR-0014](https://github.com/Rodrigo-Palma/edgar-rag/blob/main/docs/adr/0014-remove-brier-default-to-no-gate.md)).
+> That evaluation ran the code at `d70e7df`.
+
 A small model that answers typed questions about a piece of text, reports a
 confidence, and refuses to answer when it does not know.
 
@@ -47,8 +54,8 @@ between its levels, a plain choice is a choice between whatever the caller
 listed. One scorer `f(state, prompt, option)` with a softmax over the options
 answers all three, so a new question type costs no new model and no new head.
 
-The encoder underneath is frozen and borrowed. Everything above it — the
-forward pass, the gradients, the Adam loop, the calibration — is ours, in numpy.
+The encoder underneath is frozen and borrowed. Everything above it (the
+forward pass, the gradients, the Adam loop, the calibration) is ours, in numpy.
 
 ## What the measurements say
 
@@ -75,10 +82,10 @@ Per family, model against baseline:
 
 | family | model | cosine | majority |
 |---|---|---|---|
-| `relevance` — does the passage address this subject? | 1.000 | 1.000 | 0.540 |
-| `subject` — which of these is it about? | 1.000 | 1.000 | 0.520 |
-| `answerable` — does it answer *this* question? | 0.720 | **0.800** | 0.500 |
-| `tone` — how does it read for the business? | **0.560** | 0.460 | 0.520 |
+| `relevance`: does the passage address this subject? | 1.000 | 1.000 | 0.540 |
+| `subject`: which of these is it about? | 1.000 | 1.000 | 0.520 |
+| `answerable`: does it answer *this* question? | 0.720 | **0.800** | 0.500 |
+| `tone`: how does it read for the business? | **0.560** | 0.460 | 0.520 |
 
 `tone` is the only place the trained head earns its parameters, and it is the
 only task that needs something similarity cannot give: polarity. More litigation
@@ -132,13 +139,13 @@ what abstention actually rests on. It holds across all three seeds.
 
 | abstain below | answers | accuracy among them |
 |---|---|---|
-| — | 100% | 0.820 [0.761, 0.867] |
+| none | 100% | 0.820 [0.761, 0.867] |
 | 0.6 | 89.0% | 0.865 [0.807, 0.908] |
 | 0.7 | 72.5% | 0.890 [0.828, 0.931] |
 | 0.8 | 50.5% | 0.931 [0.864, 0.966] |
 | 0.9 | 18.5% | 0.946 [0.823, 0.985] |
 
-**No single row of this table proves anything on its own** — the intervals
+**No single row of this table proves anything on its own**: the intervals
 overlap the no-abstention rate. The AUROC above is the claim; this table is the
 illustration of it.
 
@@ -166,7 +173,7 @@ subtypes.** An earlier feature set scored 0.70 overall, which looked like a
 working model; `relevance` was at exactly 0.500, chance on a yes/no question.
 The cause was algebraic: when the options are `"no"` and `"yes"` they carry no
 content, so no feature built from (state, option) or (prompt, option) alone can
-separate them — only the three-way interaction can. `by_name` and `by_tag` are
+separate them; only the three-way interaction can. `by_name` and `by_tag` are
 now part of every run, and `by_tag` is what found the wrong-year zero above.
 
 **A frozen encoder is a hard ceiling, and measuring the encoder is how you find
@@ -177,7 +184,7 @@ identical, and 287 distinct texts produced 119 distinct vectors. This is a known
 regression, [ollama/ollama#15609](https://github.com/ollama/ollama/issues/15609),
 whose root cause is `BasicTokenizer` preprocessing lost in the HF→gguf
 conversion; the issue frames it as a non-ASCII problem, and it is wider than
-that — **18.3% of the words in a real 10-K start with a capital**. Lower-casing
+that: **18.3% of the words in a real 10-K start with a capital**. Lower-casing
 before encoding is one line and it is why the numbers above are what they are.
 
 ## Install and run
@@ -253,8 +260,8 @@ src/brier/
   tasks.py        the synthetic tasks, hard negatives included
 ```
 
-99 tests, 98% coverage, and the suite runs offline with a deterministic fake
-encoder.
+99 tests, 80% line coverage (`baseline.py` and `evaluate.py` have no tests), and
+the suite runs offline with a deterministic fake encoder.
 
 ## What this is not
 
